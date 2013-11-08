@@ -289,7 +289,7 @@ class ImageVisualizer(object):
         
     def _update(self):
         self._lbl_image.setPixmap(QtGui.QPixmap.fromImage(self._img))
-        self._lbl_image.resize(self._img.width(), self._img.height())
+        #self._lbl_image.resize(self._img.width(), self._img.height())
         
     def add_image(self, ndArr, *args, **kwargs):
         kwargs['besideTo'] = self
@@ -599,7 +599,7 @@ class _guiThread(Thread):
         return x
         
         
-def colorize(a, color):
+def colorize(a, color, no_upscale=False):
     """Colorize a with color. MinValue of a becomes black and MaxValue
     becomes the color defined by the 'color'-RGB-Vector. Other Values
     are evenly, linearly distributed between those."""
@@ -610,7 +610,10 @@ def colorize(a, color):
         return b
     colt = np.array([((int(color[0]*x/255.)*256 + int(color[1]*x/255.))*256 + \
             int(color[2]*x/255.)) for x in range(256)], np.uint32)
-    b.flat[...] = colt[np.require((b.flat[...]-mini)*255/d, np.uint32)]
+    s = 255/d
+    if s > 1 and no_upscale:
+        s = 1
+    b.flat[...] = colt[np.require((b.flat[...]-mini)*s, np.uint32)]
     return b
 
 
