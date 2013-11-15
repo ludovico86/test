@@ -59,7 +59,7 @@ class ImageVisualizer(object):
     
     """#TODO
     
-    swapaxis = True
+    swapaxes = False
     
     class _Communicate(QtCore.QObject):
         update_image = QtCore.pyqtSignal()
@@ -259,7 +259,7 @@ class ImageVisualizer(object):
         if colortable != None:
             self.set_colortable(colortable)
         
-        if self.swapaxis:
+        if self.swapaxes:
             c = np.require(ndArr.T, np.uint32, 'C')
         else:
             c = np.require(ndArr, np.uint32, 'C')
@@ -289,7 +289,7 @@ class ImageVisualizer(object):
         
     def _update(self):
         self._lbl_image.setPixmap(QtGui.QPixmap.fromImage(self._img))
-        #self._lbl_image.resize(self._img.width(), self._img.height())
+        self._lbl_image.resize(self._img.width(), self._img.height())
         
     def add_image(self, ndArr, *args, **kwargs):
         kwargs['besideTo'] = self
@@ -580,7 +580,7 @@ class _guiThread(Thread):
         self.start()
         
     def run(self):
-        #self._app.exec_()
+        self._app.exec_()
         pass
         
     def _new_image_id(self):

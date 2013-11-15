@@ -14,53 +14,66 @@ def center_of_mass(frame):
     frm_shape = np.array(frame.shape)
     total = frame.sum()
     if total == 0:
-        return np.array([-1,-1])
+        return np.array([-1, -1])
     else:
         y = (frame.sum(1)*np.arange(frm_shape[0])).sum() / total
         x = (frame.sum(0)*np.arange(frm_shape[1])).sum() / total
-        return np.array([y,x])
+        return np.array([y, x])
 
 
-def converge(do_list, drt, max_iter, init=None, final=None, result=[0]):
+def converge(do_list, drt, max_iter, at=None, init=None, final=None,
+             result=[0]):
     """Repeat all functions in do_list until function drt (destination reached
-    test) returns True (converge returns True) or max_iter is reached (converge
-    returns False).
-    
+    test) returns True (converge returns "success") or function at (optional;
+    abort test) returns True (converge returns "abort") or max_iter is reached
+    (converge returns "fail").
+
     Functions in do_list needs to take exactly one argmuent (that can be None).
     The Result of one function-call is passed through this argument to the next
     function-call.
     Funtion drt decides (using this results or not) if the destination is
-    reached (converged = True) or not, but this result is not passed on, so
-    it is possible to keep information about a state through the
-    function-calls. The result of the last function-call of drt before
-    returning is returned by converge.
-    
+    reached (converged = "success") or not, but this result is not passed on,
+    so it is possible to keep information about a state through the
+    function-calls.
+
+    Optional function at (using previous result) decides if a condition is
+    meet where aborting speeds up computation by not iterating until max_iter
+    is reached. True = converge returns "abort", False => continue computation.
+
     Optional argument init (initializition) must be callable which is called
     (without arguments) before starting the iteration over the do_list and
     final (finalization) is called before returning with the drts last result
     as first argument and do_lists last result as second argument.
+
+    Optional argument result will hold the last result from internal function-
+    call before returning.
     """
-    
+
     tmp = result
-    try
+    if at is None:
+        at = lambda x: False
+    try:
         tmp[0] = init()
     except TypeError:
         tmp[0] = None
-    
+
     c = 0
     while c < max_iter:
-        c += 1
+        if at(tmp[0]):
+            res = 'abort'
+            break
         for x in do_list:
             tmp[0] = x(tmp[0])
-        res = drt(tmp[0])
-        if res:
+        res = 'success' if drt(tmp[0]) else 'fail'
+        if res == 'success':
             break
-    
+        c += 1
+
     try:
         tmp[0] = final(res, tmp[0])
     except TypeError:
         pass
-    
+
     return res
 
 
@@ -232,12 +245,12 @@ class DummyCamera(Camera):
     of frame).
     """
 
-    def __init__(self, pos=(0., 0.), imgsize=(640, 480)):
+    def __init__(self, pos=(0., 0.), imgsize=(480, 640)):
         params = [Parameter('exposure-time', unit=q.s),
-                    Parameter('roi-width'),
-                    Parameter('roi-height'),
-                    Parameter('sensor-pixel-width', unit=q.micrometer),
-                    Parameter('sensor-pixel-height', unit=q.micrometer)]
+                  Parameter('roi-width'),
+                  Parameter('roi-height'),
+                  Parameter('sensor-pixel-width', unit=q.micrometer),
+                  Parameter('sensor-pixel-height', unit=q.micrometer)]
         super(DummyCamera, self).__init__(params)
         self.exposure_time = 1 * q.ms
         self.sensor_pixel_width = 5 * q.micrometer
@@ -263,43 +276,40 @@ class DummyCamera(Camera):
 
     def _grab_real(self):
         c = [(self._coord_at_trigger[0] / self.sensor_pixel_width).
-            to(q.dimensionless).magnitude,
-            (self._coord_at_trigger[1] / self.sensor_pixel_height).
-            to(q.dimensionless).magnitude]
+             to(q.dimensionless).magnitude,
+             (self._coord_at_trigger[1] / self.sensor_pixel_height).
+             to(q.dimensionless).magnitude]
         #print 'DummyCam.grab(): coord', c
         if self._frm_mode == 'file':
-            tp = self._image.dtype
-            #print 'image.type =', tp
-            src_offset = np.array(self._image.shape)/2
-            dst_offset = np.array(self._imgshape)/2
-            src_start = np.round(src_offset + c - dst_offset)
-            src_stop = np.round(src_offset + c + dst_offset)
-            if (src_start >= self._image.shape).any() or\
-                    (src_stop < 0).any():
+            src = self._image
+            srcs = src.shape
+            tp = src.dtype
+            so = np.array(srcs)/2
+            do = np.array(self._imgshape)/2
+            ss = np.require(np.round(so + c - do), np.uint32)
+            se = ss + self._imgshape
+            if (ss >= srcs).any() or (se < 0).any():
                 img = np.zeros(self._imgshape)
             else:
-                test1 = src_start < 0
-                dst_start = np.where(test1, -src_start, 0)
-                src_start[test1] = 0
-                test2 = src_stop >= self._image.shape
-                dst_stop = np.where(test2, src_offset*2-src_stop-1,
-                                    self._imgshape)
-                src_stop[test2] = np.array(self._image.shape)[test2]-1
+                t1 = ss < 0
+                ds = np.where(t1, -ss, 0)
+                ss[t1] = 0
+                t2 = se >= srcs
+                de = np.where(t2, srcs-se+self._imgshape, self._imgshape)
+                se[t2] = np.array(srcs)[t2]
                 img = np.zeros(self._imgshape)
-                
-                img[dst_start[0]:dst_stop[0], dst_start[1]:dst_stop[1]] =\
-                    self._image[src_start[0]:src_stop[0], 
-                                src_start[1]:src_stop[1]]
+                #print 'DummyCamera.grab(): coords=', np.array([ss, se])
+                img[ds[0]:de[0], ds[1]:de[1]] = src[ss[0]:se[0], ss[1]:se[1]]
         else:
             time = self.exposure_time.to(q.s).magnitude
             img = gauss_spot(self._imgshape, self._sigma, c, self._rel_sec,
-                            self._m_ax) * time*1000*(2**16-1)
+                             self._m_ax) * time*1000*(2**16-1)
             tp = np.uint16
 
         if not self._noise is None:
             img = noise(img, **self._noise)
             try:
-                mini, maxi = np.iinfo(tp).min, np.iinfo(tp).max  
+                mini, maxi = np.iinfo(tp).min, np.iinfo(tp).max
                 img[img < mini] = mini
                 img[img > maxi] = maxi
             except ValueError:
@@ -307,23 +317,39 @@ class DummyCamera(Camera):
         return np.require(img, tp)
 
     def from_image(self, img):
-        self._image = img
+        self._image = img.copy()
         self._imgshape = img.shape
+        print 'load image into DummyCamera:', self._imgshape
         self._frm_mode = 'file'
-        self._coord = np.array([0,0])*q.micrometer
+        self._coord = np.array([0, 0])*q.micrometer
+
 
 class DummyMotor(Motor):
     """A dummymotor that updates the coordates of a dummycamera on motor-
     movement."""
 
     def __init__(self, cam, axis, calibration=None, limiter=None,
-                    position=0, hard_limits=None):
+                 position=0, hard_limits=None):
         super(DummyMotor, self).__init__(calibration, limiter)
         self._remoteCam = cam
         self._axis = axis
         self._position = position
         self._hard_limits = (-100, 100) if hard_limits is None else \
             hard_limits
+
+    def move(self, delta):
+        ddelta = (delta/q.mm).to(q.dimensionless)
+        if self._position+ddelta < self._hard_limits[0]:
+            self._position = self._hard_limits[0]
+        elif not self._position+ddelta < self._hard_limits[1]:
+            # https://github.com/hgrecco/pint/issues/40
+            self._position = self._hard_limits[1]
+        else:
+            self._position += ddelta
+            d1 = self._axis[0]*ddelta
+            d2 = self._axis[1]*ddelta
+            self._remoteCam._coord[0] += d1*q.mm
+            self._remoteCam._coord[1] += d2*q.mm
 
     def _set_position(self, position):
         if position < self._hard_limits[0]:
@@ -356,137 +382,455 @@ class DummyMotor(Motor):
 def diff2center_of_mass(img):
     """"""
 
-    return center_of_mass(img-img.min()) + [0.5, 0.5] - img.shape
+    return center_of_mass(img-img.min()) + [0.5, 0.5] - np.array(img.shape)/2
 
 
-def converge_test(move_methode, cam_data_ff='stitched_image.jpg', tolerance=5,
-                  max_iter=100, imgnoise=None, save_to='converge_test.npz'):
+def ccolor(typ, val, txt):
+    return {'type': typ, 'val': val, 'txt': txt}
+
+
+colors = {'bc_inraw': ccolor('fix', 255*256, 'green'),
+          'bc_indata': ccolor('fix', (127*256+127)*256+127, 'gray'),
+          'bg': ccolor('fix', (64*256+64)*256+64, 'darkgray'),
+          'u_sp': ccolor('fix', 0, 'black'),
+          'dr_s': ccolor('gradient', lambda x: 255*2**8+x,
+                         ['green to cyan with green = ', ' to cyan = ',
+                          ' iterations']),
+          'dr_f': ccolor('fix', (200*2**8+200)*2**8, 'yellow'),
+          'dr_a': ccolor('gradient', lambda x: 255*2**16+x,
+                         ['red to magenta with red = after ',
+                          ' to magenta = after ', ' iterations aborted']),
+          'ep_s': ccolor('gradient', lambda x: 255*2**8+x,
+                         ['green to cyan with green = ', ' to cyan = ',
+                          ' endpoints at the same position']),
+          'ep_f': ccolor('fix', (200*2**8+200)*2**8, 'yellow'),
+          'ep_a': ccolor('gradient', lambda x: 255*2**16+x,
+                         ['red to magenta with red = ', ' to magenta = ',
+                          ' failed endpoints at the same position'])}
+
+
+def lcolor(colkey, x=0):
+    return colors[colkey]['val'] if colors[colkey]['type'] == 'fix' else \
+        colors[colkey]['val'](x)
+
+
+def lcol_txt(colkey, start=0, end=0):
+    return colors[colkey]['txt'] if colors[colkey]['type'] == 'fix' else \
+        colors[colkey]['txt'][0]+str(start)+colors[colkey]['txt'][1] + \
+        str(end)+colors[colkey]['txt'][2]
+
+
+def converge_test(move_methode, cam_data='stitched_image.jpg',
+                  tolerance=50, max_iter=100, imgnoise=None, max_time=86400):
     """"""
+    import time
 
     def cam2pixel():
         r = np.array(cam._coord)
         r /= [cam.sensor_pixel_height, cam.sensor_pixel_width]
-        r += [0.5, 0.5] - np.array(frm_shape)/2
+        r = np.array([r[0].magnitude, r[1].magnitude])
+        r += frm_shape/2 - [0.5, 0.5]
         return r
 
     def pixel2cam(pix):
+        pix -= frm_shape/2
         cam._coord = [pix[0]*cam.sensor_pixel_height,
                       pix[1]*cam.sensor_pixel_width]
 
+    def print_progress():
+        print str(round(tdiff, 1))+'s',
+        if trel == 0:
+            print ',\t',
+        else:
+            total = tdiff/trel
+            print '(estm. full_test:'+str(round(total, 1))+'s, to go:' + \
+                (str(round(total-tdiff, 1))+'s' if total < max_time else
+                 str(round(max_time+add2timeout[0]-tdiff, 1)) + 
+                 's until timeout')+'),\t',
+        print title_txt+'total: '+str(round(100*trel, 1))+'% cycle[' + \
+            str(step)+']: '+str(round(100*crel, 1))+'%'
+        if timeout[0]:
+            t = time.time()
+            cycletime = (2**step+1)**2 * tdiff / float(tsp[0])
+            print '\nTimeout reached!\nDo you want to stop, complete this' + \
+                ' cycle (estm. '+str(round(cycletime, 1))+'s) or continue ' + \
+                'by specifing an additional timeout (estm. total=' + \
+                str(round(total-tdiff, 1))+'s)'
+            rp1 = True
+            while rp1:
+                expr = raw_input('stop, complete cycle, new timeout ' +
+                                 '[a,b,c]: ')
+                if expr in ['', 'a', 'A']:
+                    print 'stopping...'
+                    abort[0] = True
+                    rp1 = False
+                elif expr in ['b', 'B']:
+                    print 'completing cycle...'
+                    timeout[0] = False
+                    add2timeout[0] = round(cycletime*2)
+                    stopafter[0] = True
+                    rp1 = False
+                elif expr in ['c', 'C']:
+                    rp2 = 0
+                    while rp2 < 3:
+                        expr = raw_input('additional time for computing: ')
+                        try:
+                            add2timeout[0] += float(expr)
+                            timeout[0] = False
+                            break
+                        except ValueError as p:
+                            rp2 += 1
+                            print p, 'retry (aborting after', 3-rp2, \
+                                'additional tries)'
+                    if rp2 >= 3:
+                        abort[0] = True
+                    rp1 = False
+                else:
+                    print 'Unknown expression: "'+expr+'"'
+            userwait_time[0] += time.time() - t
+
     def initializition():
-        xmot.position = 0*q.m
-        zmot.position = 0*q.m
-        pixel2cam([yrang[yind],x])
-        return 0
+        cam.trigger()
+        return [0, cam.grab(), 0]
 
     def do(arg1):
-        cam.trigger()
-        img = cam.grab()
-        move = move_methode(img)
+        move = move_methode(arg1[1])
         xmot.move(move[0]*cam.sensor_pixel_height)
-        zmot.move(move[1]*cam.sensor_pixel_width)
-        return arg1 + 1
+        zmot.move(move[1]*cam.sensor_pixel_width)  # .wait()
+        arg1[2] = arg1[2]+1 if (move**2).sum() < 5**2 else 0
+        cam.trigger()
+        return [arg1[0]+1, cam.grab(), arg1[2]]
 
     def dest_reached(arg1):
         coord = cam2pixel()
         return ((coord - beamcenter)**2).sum() < tol2
 
-    # testparam init
-    beamcenter = center_of_mass(img-img.min())
-    tol2 = tolerance ** 2
+    def abort_test(arg1):
+        no_move = arg1[2] >= 3
+        #print no_move
+        r = cam2pixel()
+        #print 'r:', r, 'frm_shape:', frm_shape
+        #print '(r<0):', r < 0, '(r<0).any():', (r < 0).any()
+        #print '(r>frm_shape):', r > frm_shape, '(r>frm_shape).any():', (r > frm_shape).any()
+        outbound = ((r < 0).any()) or ((r >= frm_shape).any())
+        #print '(r<0) or (r>frm_shape):', outbound
+        #print 'abort_test: no_move =', no_move, ', outbound =', outbound
+        return no_move or outbound
 
-    # init
-    from scipy.ndimage import imread
+    def test_sp(y, x):
+        xmot._position = 0
+        zmot._position = 0
+        pixel2cam([y, x])
+        _iter = [0]
+        res = converge([do], dest_reached, max_iter, abort_test,
+                       initializition, None, _iter)
+        count = int(_iter[0][0]*255./max_iter)
+        if res == 'success':
+            #print 'converge result: success'
+            v1 = 'dr_s'
+            v2 = 3
+            c_s[0] += 1
+        elif res == 'fail':
+            #print 'converge result: fail'
+            v1 = 'dr_f'
+            v2 = 2
+            c_f[0] += 1
+        else:
+            #print 'converge result: abort'
+            v1 = 'dr_a'
+            v2 = 1
+            c_a[0] += 1
+        img_dr[y, x] = lcolor(v1, count)
+        epy, epx = cam2pixel()
+        if (epy > 0) and (epy < frm_shape[0]) and \
+                (epx > 0) and (epx < frm_shape[1]):
+            img_ep[epy, epx] += 1
+            epm[epy, epx] = v2 if v2 > epm[epy, epx] else epm[epy, epx]
+        else:
+            outcount[0] += 1
+        tsp[0] += 1
+
+    # init dummys
     cam = DummyCamera()
-    if isinstance(cam_data_ff, str) and len(cam_data_ff) > 0:
-        img = imread(cam_data_ff)
+    o_sh = cam._imgshape
+    if isinstance(cam_data, str) and len(cam_data) > 0:
+        from scipy.ndimage import imread
+        img = imread(cam_data)
+        data_source = cam_data
+    elif isinstance(cam_data, dict):
+        img = cam_data['img']
+        data_source = cam_data['img_name']
+    elif isinstance(cam_data, np.ndarray):
+        img = cam_data
+        data_source = 'given image'
     else:
-        cam_data_ff = 'generated'
-        o_sh = cam._imgshape
-        cam._imgshape = (6000,8000)
+        cam._imgshape = (6000, 8000)
         cam._sigma = 1000
         cam._rel_sec = 0.4
         cam._m_ax = [1, 0]
         cam.trigger()
         img = cam.grab()
-        cam._imgshape = o_sh
-    frm_shape = img.shape
+        data_source = 'generated'
     cam.from_image(img)
+    cam._imgshape = o_sh
+    frm_shape = np.array(img.shape)
     cam._noise = imgnoise
     xmot = DummyMotor(cam, [1, 0])
     zmot = DummyMotor(cam, [0, 1])
 
-    # progressbar init
-    prog = np.zeros((50,400), np.uint8)
-    ImVis.swapaxis = False
-    title_txt = 'Running test: '
-    percent = 0
-    progbar = ImVis({'ndArr': prog, 'imgTitle': title_txt+str(percent)+'%'})
+    # init
+    bc = center_of_mass(img-img.min())
+    pixel2cam(bc)
+    converge([do], lambda x: False, 10, abort_test, initializition)
+    beamcenter = cam2pixel()
 
-    # result init
-    to_gray = lambda x: (x*256 + x)*256 +x
-    gray = to_gray(127)
-    white = to_gray(255)
-    red = 255 * 2**16
-    green = 255 * 2**8
-    img_dr = np.tile(gray, frm_shape, dtype=np.uint32)  # destination reached
-    img_rc = np.tile(red, frm_shape, dtype=np.uint32)   # reachcount
-    img_ep = np.zeros(frm_shape, np.uint32)             # endpoint
+    tol2 = tolerance ** 2
+    title_txt = 'Running test: '
+    outcount = [0]
+    c_s = [0]
+    c_f = [0]
+    c_a = [0]
+    tsp = [0]
+    epm = np.zeros(frm_shape, np.uint8)
+    spm = np.zeros(frm_shape, np.bool_)
+    start = np.round(np.array(cam._imgshape)/2)
+    length = np.array(frm_shape)-cam._imgshape
+    spm[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = True
+    userwait_time = [0]
+    add2timeout = [0]
+    timeout = [False]
+    stopafter = [False]
+    abort = [False]
+
+    # init result-images
+    img_dr = np.require(np.tile(lcolor('bg'), frm_shape), np.uint32)
+    img_dr[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = \
+        lcolor('u_sp')
+    img_ep = np.zeros(frm_shape, np.uint32)
 
     # testloop
-    ylen = frm_shape[0]-cam._imgshape[0]
-    ystart = round(cam._imgshape[0]/2)
-    yrang = np.arange(ystart, ystart-ylen)
-    xlen = frm_shape[1]-cam._imgshape[1]
-    xstart = round(cam._imgshape[1]/2)
-    xrang = np.arange(xstart,xstart+xlen)
-    _iter = [0]
-    for yind in range(ylen):
-        rel = yind/ylen
-        prog[:, :400*rel] = 255
-        progbar.image(prog)
-        progbar.setTitle(title_txt+str(round(100*rel, 1))+'%')
-        for x in xrang:
-            res = converge([do], dest_reached, max_iter, initializition,
-                           None, _iter)
-            img_dr[yrang[yind],x] = green if res else red
-            img_rc[yrang[yind],x] = to_gray(int(_iter[0]*255./max_iter))
-            endpoint = cam2pixel()
-            if not ((endpoint < 0).any() or (endpoint > frm_shape).any()):
-                img_ep[endpoint[0], endpoint[1]] = green if res else white
+    step = 0
+    orel = -1
+    old_time = time.time()
+    trel = 0
+    tstep = 1./((length+1).prod())
+    while (spm.any()) and (not abort[0]) and (not stopafter[0]):
+        y = 0.
+        ystep, xstep = np.require(length, np.float64)/2**step
+        crel = 0.
+        cstep = 1/4 if step == 0 else 1/(3./4*(2**step)**2+2**step)
 
-    # save to file
-    np.savez(save_to,
-             main_img=np.require(img, np.dtype('<i4')),
-             img_dr=np.require(img_dr, np.dtype('<i4')),
-             img_rc=np.require(img_rc, np.dtype('<i4')),
-             img_ep=np.require(img_ep, np.dtype('<i4')))#,
-             #ext_data=#TODO)
+        while y <= length[0] and (not abort[0]):
+            x = 0.
 
-    # visualize
-    i1 = {'ndArr': img, 'imgTitle': 'Cam_Data: ', 'imgInfo': 'Main image ('+
-          cam_data_ff+', '+img.shape[1]+'x'+img.shape[0]+'pixels) that is '+
-          'used as a template.'+
-          '\nThe viewport of the cutout image is '+str(cam._imgshape[1])+'x'+
-          str(cam._imgshape[0])+'pixels'+
-          '\nnoise = '+str(imgnoise)+
-          '\ntolerance = '+str(tolerance)+'pixels'+
-          '\nmax_iterations = '+str(max_iter)}
-    i2 = {}
+            while x <= length[1] and (not abort[0]):
+                ry, rx = np.round([y, x])+start
+                if spm[ry, rx]:
+                    test_sp(ry, rx)
+                    spm[ry, rx] = False
+                    trel += tstep
+                    crel += cstep
+                x += xstep
+
+                tdiff = time.time()-old_time-userwait_time[0]
+                timeout[0] = (tdiff > max_time+add2timeout[0]) and \
+                    (not stopafter[0])
+                if timeout[0]:
+                    print_progress()
+
+            y += ystep
+            if orel < round(1000*trel):
+                print_progress()
+                orel = round(1000*trel)
+
+        step += 1
+        print_progress()
+
+    print 'computed '+str(tsp[0])+' startpoints in ' + \
+        str(round(time.time()-old_time-userwait_time[0], 1))+'s'
+
+    # visualize data
+    smax, fmax, amax = 0, 0, 0
+    val = np.unique(epm)
+    for i in val[val != 0]:
+        m = epm == i
+        max_ = img_ep[m].max() if img_ep[m].size > 0 else 0
+        if i == 3:
+            #print 'smax =', max_
+            smax = max_
+            c = 'ep_s'
+        elif i == 2:
+            #print 'fmax =', max_
+            fmax = max_
+            c = 'ep_f'
+        elif i == 1:
+            #print 'amax =', max_
+            amax = max_
+            c = 'ep_a'
+        func = lambda x: lcolor(c, (x-1)*255./max_)
+        cmap = np.array(map(func, range(max_+1)), np.uint32)
+        #print 'cmap (len='+str(cmap.shape)+'):'
+        #print cmap
+        img_ep[m] = cmap[img_ep[m]]
+
+    img_t = img.dtype
+    if img_t != np.uint32:
+        img = np.require(img, np.uint32)
+        if img_t == np.int8 or img_t == np.uint8:
+            img *= 2**16 + 2**8 + 1
+    bs = np.floor(beamcenter - tolerance)
+    be = np.floor(beamcenter + tolerance + 1)
+    sl1, sl2 = slice(bs[0], be[0]), slice(bs[1], be[1])
+    mask = ((np.indices(np.ceil([tolerance*2+1, tolerance*2+1])) +
+            (beamcenter % 1).reshape(2, 1, 1)-tolerance)**2).sum(0) < tol2
+    img[sl1, sl2] = np.where(mask, lcolor('bc_inraw'), img[sl1, sl2])
+    m1 = np.logical_and(mask, img_dr[sl1, sl2] == lcolor('u_sp'))
+    img_dr[sl1, sl2] = np.where(m1, lcolor('bc_indata'), img_dr[sl1, sl2])
+    tmp = np.require(np.tile(lcolor('bg'), frm_shape), np.uint32)
+    tmp[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = \
+        lcolor('u_sp')
+    img_ep = np.where(epm == 0, tmp, img_ep)
+    m2 = np.logical_and(mask, img_ep[sl1, sl2] == lcolor('u_sp'))
+    img_ep[sl1, sl2] = np.where(m2, lcolor('bc_indata'), img_ep[sl1, sl2])
+
+    # result
+    data = {'img': img, 'img_dr': img_dr, 'img_ep': img_ep,
+            'ds': data_source, 'view': cam._imgshape, 'noise': imgnoise,
+            'tol': tolerance, 'mi': max_iter, 'bc': beamcenter, 'cbc': bc,
+            'oc': outcount, 'c_s': c_s[0], 'c_f': c_f[0], 'c_a': c_a[0],
+            'tsp': tsp[0], 'ep_fmax': fmax, 'ep_smax': smax, 'ep_amax': amax}
+
+    return data
 
 
-def converge_test_ff(filename='converge_test.npz'):
+def converge_test_save_result(testdata, filename='converge_test.npz'):
     """"""
 
-    
+    td = testdata
+    np.savez_compressed(filename,
+                        img=np.require(td['img'], np.dtype('<u4')),
+                        img_dr=np.require(td['img_dr'], np.dtype('<u4')),
+                        img_ep=np.require(td['img_ep'], np.dtype('<u4')),
+                        ds=td['ds'], view=td['view'], noise=td['noise'],
+                        tol=td['tol'], mi=td['mi'], bc=td['bc'], cbc=td['cbc']
+                        oc=td['oc'], tsp=td['tsp'], c_s=td['c_s'],
+                        c_f=td['c_f'], c_a=td['c_a'], ep_fmax=td['ep_fmax'],
+                        ep_smax=td['ep_smax'], ep_amax=td['ep_amax'])
 
 
+def converge_test_load_result(filename='converge_test.npz'):
+    """"""
+
+    tmp = np.load(filename)
+    data = {}
+    for x in tmp:
+        data[x] = tmp[x]
+    data['img'] = data['img'].view(np.dtype('<u4'))
+    data['img_dr'] = data['img_dr'].view(np.dtype('<u4'))
+    data['img_ep'] = data['img_ep'].view(np.dtype('<u4'))
+
+    return data
 
 
+def converge_test_view_result(testdata):
+    """Visualizes the testdata."""
 
+    def color_expl_txt(prefix):
+        e1, e2 = [td['ep_smax'], td['ep_amax']] if prefix == 'ep_' else \
+            [td['mi'], td['mi']-1]
+        return 'colors:\n  backgroundcolor: '+lcol_txt('bg') + \
+            '\n  pixels not used as startingpoint: '+lcol_txt('u_sp') + \
+            '\n  beamcenter-mark: '+lcol_txt('bc_indata') + \
+            '\n  success: '+lcol_txt(prefix+'s', 1, e1) + \
+            '\n  fail: '+lcol_txt(prefix+'f') + \
+            '\n  abort: '+lcol_txt(prefix+'a', 1, e2)
 
+    td = testdata
+    stats_txt = 'statistics:' + \
+        '\n  total number of startingpoints: '+str(td['tsp']) + \
+        '\n  destination reached: '+str(td['c_s'])+' startpoints (' + \
+        str(round(100*td['c_s']/float(td['tsp']), 1))+'%)' + \
+        '\n  failed (after '+str('mi')+' iterations): '+str(td['c_f']) + \
+        ' startpoints ('+str(round(100*td['c_f']/float(td['tsp']), 1))+'%)' + \
+        '\n aborted: '+str(td['c_a'])+' startpoints (' + \
+        str(round(100*td['c_a']/float(td['tsp']), 1))+'%)'
+    img = td['img']
 
+    i1 = {'ndArr': img, 'imgInfo': 'Mainimage ('+str(td['ds'])+', ' +
+          str(img.shape[1])+'x'+str(img.shape[0])+'pixels) that is used as ' +
+          'a template.\nThe viewport of the cutout image is ' +
+          str(td['view'][1])+'x'+str(td['view'][0])+'pixels.'+'\nnoise = ' +
+          str(td['noise'])+'\ntolerance = '+str(td['tol'])+'pixels' +
+          '\nmax_iterations = '+str(td['mi'])+'\ncenter of mass ' +
+          '+ converge(10iterations) (beamcenter) of the template is [x: ' +
+          str(td['bc'][1])+', y: '+str(td['bc'][0])+'] (marked ' + 
+          colors['bc_indata']['txt']+')\n\n'+stats_txt}
+    i2 = {'ndArr': td['img_dr'], 'imgInfo': 'Image indicating for each pixel' +
+          ' as a startingpoint if the beamcenter could be reached (within ' +
+          'tolerance) after '+str(td['mi'])+' iterations.\n\n' +
+          color_expl_txt('dr_')+'\n\n'+stats_txt}
+    i3 = {'ndArr': td['img_ep'], 'imgInfo': 'Image indicating the endpoints ' +
+          'after moving towards the center of mass.\n\n' +
+          color_expl_txt('ep_')+'\n\n'+stats_txt}
+    tabs = [{'tabTitle': 'cam_rawdata', 'images': i1},
+            {'tabTitle': 'destination reached', 'images': i2},
+            {'tabTitle': 'endpoints', 'images': i3}]
 
+    try:
+        i4 = {'ndArr': td['img_tr'], 'imgInfo': 'Image showing the trace of ' +
+              'each startingpoint'}
+        tabs.append({'tabTitle': 'trace', 'images': i4})
+    except KeyError:
+        pass
+
+    i4 = {'ndArr': img, 'imgTitle': 'raw_data'}
+    i5 = {'ndArr': td['img_dr'], 'imgTitle': 'destination reached'}
+    i6 = {'ndArr': td['img_ep'], 'imgTitle': 'endpoints'}
+    tabs.extend([{'tabTitle': 'raw + dest_reach compare', 'images': [i4, i5]},
+                 {'tabTitle': 'raw + endpoints compare', 'images': [i4, i6]}])
+
+    fact = int(max(img.shape)/500)
+    if fact > 1:
+        i7 = {'ndArr': img[0:-1:fact, 0:-1:fact],
+              'imgTitle': 'raw_data (resampled)'}
+
+        sh = int(img.shape[0]/fact), int(img.shape[1]/fact)
+        dtyp = np.dtype([('k1', 'u1'), ('k2', 'u1'),
+                         ('k3', 'u1'), ('k4', 'u1')])
+
+        dr_s = td['img_dr'][:fact*sh[0], :fact*sh[1]].copy().\
+            reshape(sh[0], fact, sh[1], fact).swapaxes(1, 2)
+        dr_s_bgra = dr_s.view(dtyp)
+        dr_d = np.zeros(sh, np.uint32)
+        dr_d_bgra = dr_d.view(dtyp)
+        for y in range(sh[0]):
+            for x in range(sh[1]):
+                for k in ['k1', 'k2', 'k3', 'k4']:
+                    pix = dr_s_bgra[k][y, x]
+                    mask = np.logical_and(pix != lcolor('bg'),
+                                          pix != lcolor('u_sp'))
+                    pix = pix[mask]
+                    dr_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
+        i8 = {'ndArr': dr_d, 'imgTitle': 'dest_reached'}
+
+        ep_s = td['img_ep'][:fact*sh[0], :fact*sh[1]].copy().\
+            reshape(sh[0], fact, sh[1], fact).swapaxes(1, 2)
+        ep_s_bgra = ep_s.view(dtyp)
+        ep_d = np.zeros(sh, np.uint32)
+        ep_d_bgra = ep_d.view(dtyp)
+        for y in range(sh[0]):
+            for x in range(sh[1]):
+                for k in ['k1', 'k2', 'k3', 'k4']:
+                    pix = ep_s_bgra[k][y, x]
+                    mask = np.logical_and(pix != lcolor('bg'),
+                                          pix != lcolor('u_sp'))
+                    pix = pix[mask]
+                    ep_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
+        i9 = {'ndArr': ep_d, 'imgTitle': 'endpoints'}
+        tabs.append({'tabTitle': 'overview', 'images': [i7, i8, i9]})
+
+    w = {'windowTitle': 'Converge-Test', 'tabs': tabs}
+    return ImVis(w)
 
 
 
