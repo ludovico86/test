@@ -445,7 +445,7 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
             total = tdiff/trel
             print '(estm. full_test:'+str(round(total, 1))+'s, to go:' + \
                 (str(round(total-tdiff, 1))+'s' if total < max_time else
-                 str(round(max_time+add2timeout[0]-tdiff, 1)) + 
+                 str(round(max_time+add2timeout[0]-tdiff, 1)) +
                  's until timeout')+'),\t',
         print title_txt+'total: '+str(round(100*trel, 1))+'% cycle[' + \
             str(step)+']: '+str(round(100*crel, 1))+'%'
@@ -507,14 +507,8 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
 
     def abort_test(arg1):
         no_move = arg1[2] >= 3
-        #print no_move
         r = cam2pixel()
-        #print 'r:', r, 'frm_shape:', frm_shape
-        #print '(r<0):', r < 0, '(r<0).any():', (r < 0).any()
-        #print '(r>frm_shape):', r > frm_shape, '(r>frm_shape).any():', (r > frm_shape).any()
         outbound = ((r < 0).any()) or ((r >= frm_shape).any())
-        #print '(r<0) or (r>frm_shape):', outbound
-        #print 'abort_test: no_move =', no_move, ', outbound =', outbound
         return no_move or outbound
 
     def test_sp(y, x):
@@ -526,17 +520,14 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
                        initializition, None, _iter)
         count = int(_iter[0][0]*255./max_iter)
         if res == 'success':
-            #print 'converge result: success'
             v1 = 'dr_s'
             v2 = 3
             c_s[0] += 1
         elif res == 'fail':
-            #print 'converge result: fail'
             v1 = 'dr_f'
             v2 = 2
             c_f[0] += 1
         else:
-            #print 'converge result: abort'
             v1 = 'dr_a'
             v2 = 1
             c_a[0] += 1
@@ -609,12 +600,13 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
     img_ep = np.zeros(frm_shape, np.uint32)
 
     # testloop
-    step = 0
+    step = -1
     orel = -1
     old_time = time.time()
     trel = 0
     tstep = 1./((length+1).prod())
     while (spm.any()) and (not abort[0]) and (not stopafter[0]):
+        step += 1
         y = 0.
         ystep, xstep = np.require(length, np.float64)/2**step
         crel = 0.
@@ -643,7 +635,6 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
                 print_progress()
                 orel = round(1000*trel)
 
-        step += 1
         print_progress()
 
     print 'computed '+str(tsp[0])+' startpoints in ' + \
@@ -669,8 +660,6 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
             c = 'ep_a'
         func = lambda x: lcolor(c, (x-1)*255./max_)
         cmap = np.array(map(func, range(max_+1)), np.uint32)
-        #print 'cmap (len='+str(cmap.shape)+'):'
-        #print cmap
         img_ep[m] = cmap[img_ep[m]]
 
     img_t = img.dtype
@@ -712,7 +701,7 @@ def converge_test_save_result(testdata, filename='converge_test.npz'):
                         img_dr=np.require(td['img_dr'], np.dtype('<u4')),
                         img_ep=np.require(td['img_ep'], np.dtype('<u4')),
                         ds=td['ds'], view=td['view'], noise=td['noise'],
-                        tol=td['tol'], mi=td['mi'], bc=td['bc'], cbc=td['cbc']
+                        tol=td['tol'], mi=td['mi'], bc=td['bc'], cbc=td['cbc'],
                         oc=td['oc'], tsp=td['tsp'], c_s=td['c_s'],
                         c_f=td['c_f'], c_a=td['c_a'], ep_fmax=td['ep_fmax'],
                         ep_smax=td['ep_smax'], ep_amax=td['ep_amax'])
@@ -750,7 +739,7 @@ def converge_test_view_result(testdata):
         '\n  total number of startingpoints: '+str(td['tsp']) + \
         '\n  destination reached: '+str(td['c_s'])+' startpoints (' + \
         str(round(100*td['c_s']/float(td['tsp']), 1))+'%)' + \
-        '\n  failed (after '+str('mi')+' iterations): '+str(td['c_f']) + \
+        '\n  failed (after '+str(td['mi'])+' iterations): '+str(td['c_f']) + \
         ' startpoints ('+str(round(100*td['c_f']/float(td['tsp']), 1))+'%)' + \
         '\n aborted: '+str(td['c_a'])+' startpoints (' + \
         str(round(100*td['c_a']/float(td['tsp']), 1))+'%)'
@@ -761,10 +750,11 @@ def converge_test_view_result(testdata):
           'a template.\nThe viewport of the cutout image is ' +
           str(td['view'][1])+'x'+str(td['view'][0])+'pixels.'+'\nnoise = ' +
           str(td['noise'])+'\ntolerance = '+str(td['tol'])+'pixels' +
-          '\nmax_iterations = '+str(td['mi'])+'\ncenter of mass ' +
-          '+ converge(10iterations) (beamcenter) of the template is [x: ' +
-          str(td['bc'][1])+', y: '+str(td['bc'][0])+'] (marked ' + 
-          colors['bc_indata']['txt']+')\n\n'+stats_txt}
+          '\nmax_iterations = '+str(td['mi'])+'\ncenter of mass of the ' +
+          'template is [x: '+str(td['cbc'][1])+', y: '+str(td['cbc'][0]) +
+          '] and\ncenter of mass + converge (10iterations) is [x: ' +
+          str(td['bc'][1])+', Y: '+str(td['bc'][0])+' (marked ' +
+          colors['bc_inraw']['txt']+')\n\n'+stats_txt}
     i2 = {'ndArr': td['img_dr'], 'imgInfo': 'Image indicating for each pixel' +
           ' as a startingpoint if the beamcenter could be reached (within ' +
           'tolerance) after '+str(td['mi'])+' iterations.\n\n' +
@@ -792,7 +782,8 @@ def converge_test_view_result(testdata):
     fact = int(max(img.shape)/500)
     if fact > 1:
         i7 = {'ndArr': img[0:-1:fact, 0:-1:fact],
-              'imgTitle': 'raw_data (resampled)'}
+              'imgTitle': 'raw_data (resampled)',
+              'imgInfo': i1['imgInfo']}
 
         sh = int(img.shape[0]/fact), int(img.shape[1]/fact)
         dtyp = np.dtype([('k1', 'u1'), ('k2', 'u1'),
@@ -811,7 +802,8 @@ def converge_test_view_result(testdata):
                                           pix != lcolor('u_sp'))
                     pix = pix[mask]
                     dr_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
-        i8 = {'ndArr': dr_d, 'imgTitle': 'dest_reached'}
+        i8 = {'ndArr': dr_d, 'imgTitle': 'dest_reached',
+              'imgInfo': i2['imgInfo']}
 
         ep_s = td['img_ep'][:fact*sh[0], :fact*sh[1]].copy().\
             reshape(sh[0], fact, sh[1], fact).swapaxes(1, 2)
@@ -826,7 +818,7 @@ def converge_test_view_result(testdata):
                                           pix != lcolor('u_sp'))
                     pix = pix[mask]
                     ep_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
-        i9 = {'ndArr': ep_d, 'imgTitle': 'endpoints'}
+        i9 = {'ndArr': ep_d, 'imgTitle': 'endpoints', 'imgInfo': i3['imgInfo']}
         tabs.append({'tabTitle': 'overview', 'images': [i7, i8, i9]})
 
     w = {'windowTitle': 'Converge-Test', 'tabs': tabs}
