@@ -1,11 +1,12 @@
 
 
+import weakref
 import numpy as np
 from concert.quantities import q
 from concert.base import Parameter
 from concert.devices.cameras.base import Camera
 from concert.devices.motors.base import Motor
-from imwin import ImVis
+from imwin import ImVis, _ext_Callback
 
 
 def center_of_mass(frame):
@@ -64,9 +65,11 @@ def converge(do_list, drt, max_iter, at=None, init=None, final=None,
             break
         for x in do_list:
             tmp[0] = x(tmp[0])
-        res = 'success' if drt(tmp[0]) else 'fail'
-        if res == 'success':
+        if drt(tmp[0]):
+            res = 'success'
             break
+        else:
+            res = 'fail'
         c += 1
 
     try:
@@ -261,9 +264,14 @@ class DummyCamera(Camera):
         self._imgshape = imgsize
         self._noise = None
         self._frm_mode = 'generate'
+        self._trace = None
 
         self._coord = [pos[0] * q.meter, pos[1] * q.meter]
         self._coord_at_trigger = [pos[0] * q.meter, pos[1] * q.meter]
+        #self._callbacks = {'start_recording': [],
+        #                   'stop_recording': [],
+        #                   'trigger': [],
+        #                   'grab': []}
 
     def _record_real(self):
         pass
@@ -273,12 +281,17 @@ class DummyCamera(Camera):
 
     def _trigger_real(self):
         self._coord_at_trigger = self._coord
+        if not self._trace is None:
+            self._trace.append([self._coord[x]*1 for x in range(2)])
 
     def _grab_real(self):
-        c = [(self._coord_at_trigger[0] / self.sensor_pixel_width).
-             to(q.dimensionless).magnitude,
-             (self._coord_at_trigger[1] / self.sensor_pixel_height).
-             to(q.dimensionless).magnitude]
+        return self.img_from_coord(self._coord_at_trigger)
+
+    def img_from_coord(self, coord):
+        c = [(coord[0]/self.sensor_pixel_width).to(q.dimensionless.units).\
+             magnitude,
+             (coord[1]/self.sensor_pixel_height).to(q.dimensionless.units).\
+             magnitude]
         #print 'DummyCam.grab(): coord', c
         if self._frm_mode == 'file':
             src = self._image
@@ -298,10 +311,9 @@ class DummyCamera(Camera):
                 de = np.where(t2, srcs-se+self._imgshape, self._imgshape)
                 se[t2] = np.array(srcs)[t2]
                 img = np.zeros(self._imgshape)
-                #print 'DummyCamera.grab(): coords=', np.array([ss, se])
                 img[ds[0]:de[0], ds[1]:de[1]] = src[ss[0]:se[0], ss[1]:se[1]]
         else:
-            time = self.exposure_time.to(q.s).magnitude
+            time = self.exposure_time.to(q.s.units).magnitude
             img = gauss_spot(self._imgshape, self._sigma, c, self._rel_sec,
                              self._m_ax) * time*1000*(2**16-1)
             tp = np.uint16
@@ -314,6 +326,7 @@ class DummyCamera(Camera):
                 img[img > maxi] = maxi
             except ValueError:
                 pass
+
         return np.require(img, tp)
 
     def from_image(self, img):
@@ -321,7 +334,17 @@ class DummyCamera(Camera):
         self._imgshape = img.shape
         print 'load image into DummyCamera:', self._imgshape
         self._frm_mode = 'file'
-        self._coord = np.array([0, 0])*q.micrometer
+        self._coord = np.array([0., 0.])*q.um
+
+    def start_tracing(self):
+        tr = self._trace
+        self._trace = []
+        return tr
+        
+    def stop_tracing(self):
+        tr = self._trace
+        self._trace = None
+        return tr
 
 
 class DummyMotor(Motor):
@@ -338,32 +361,32 @@ class DummyMotor(Motor):
             hard_limits
 
     def move(self, delta):
-        ddelta = (delta/q.mm).to(q.dimensionless)
+        ddelta = delta.to(q.mm.units).magnitude
         if self._position+ddelta < self._hard_limits[0]:
-            self._position = self._hard_limits[0]
+            ddelta = self._hard_limits[0] - self._position
         elif not self._position+ddelta < self._hard_limits[1]:
             # https://github.com/hgrecco/pint/issues/40
-            self._position = self._hard_limits[1]
-        else:
-            self._position += ddelta
-            d1 = self._axis[0]*ddelta
-            d2 = self._axis[1]*ddelta
-            self._remoteCam._coord[0] += d1*q.mm
-            self._remoteCam._coord[1] += d2*q.mm
+            ddelta = self._hard_limits[1] - self._position
+        self._position += ddelta
+
+        d1 = self._axis[0]*ddelta
+        d2 = self._axis[1]*ddelta
+        self._remoteCam._coord[0] += d1*q.mm
+        self._remoteCam._coord[1] += d2*q.mm
 
     def _set_position(self, position):
         if position < self._hard_limits[0]:
-            self._position = self._hard_limits[0]
+            position = self._hard_limits[0]
         elif not position < self._hard_limits[1]:
             # https://github.com/hgrecco/pint/issues/40
-            self._position = self._hard_limits[1]
-        else:
-            diff = position - self._position
-            self._position = position
-            d1 = self._axis[0]*diff
-            d2 = self._axis[1]*diff
-            self._remoteCam._coord[0] += d1*q.mm
-            self._remoteCam._coord[1] += d2*q.mm
+            position = self._hard_limits[1]
+        diff = position - self._position
+        self._position = position
+
+        d1 = self._axis[0]*diff
+        d2 = self._axis[1]*diff
+        self._remoteCam._coord[0] += d1*q.mm
+        self._remoteCam._coord[1] += d2*q.mm
 
     def _get_position(self):
         return self._position
@@ -377,6 +400,26 @@ class DummyMotor(Motor):
     def in_hard_limit(self):
         return self._position < self._hard_limits[0] or not \
             self._position < self._hard_limits[1]
+
+
+#def 
+
+
+def fcenter(img):
+    """"""
+
+    from scipy.ndimage.filters import gaussian_filter
+    img = gaussian_filter(img-img.min(), 20)
+    mask = img > (0.8*img.max())
+    return center_of_mass(mask) + [0.5, 0.5] - np.array(img.shape)/2
+
+
+def filtered_center(img):
+    """"""
+
+    from scipy.ndimage.filters import gaussian_filter
+    img = gaussian_filter(img-img.min(), 20)
+    return center_of_mass(img) + [0.5, 0.5] - np.array(img.shape)/2
 
 
 def diff2center_of_mass(img):
@@ -421,12 +464,14 @@ def lcol_txt(colkey, start=0, end=0):
 
 
 def converge_test(move_methode, cam_data='stitched_image.jpg',
-                  tolerance=50, max_iter=100, imgnoise=None, max_time=86400):
+                  tolerance=50, max_iter=100, imgnoise=None, max_time=86400,
+                  trace=False):
     """"""
     import time
 
-    def cam2pixel():
-        r = np.array(cam._coord)
+    def cam2pixel(coord=None):
+        coord = cam._coord if coord is None else coord
+        r = np.array(coord)
         r /= [cam.sensor_pixel_height, cam.sensor_pixel_width]
         r = np.array([r[0].magnitude, r[1].magnitude])
         r += frm_shape/2 - [0.5, 0.5]
@@ -451,7 +496,7 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
             str(step)+']: '+str(round(100*crel, 1))+'%'
         if timeout[0]:
             t = time.time()
-            cycletime = (2**step+1)**2 * tdiff / float(tsp[0])
+            cycletime = ((2**step+1)**2-tsp[0]) * tdiff / float(tsp[0])
             print '\nTimeout reached!\nDo you want to stop, complete this' + \
                 ' cycle (estm. '+str(round(cycletime, 1))+'s) or continue ' + \
                 'by specifing an additional timeout (estm. total=' + \
@@ -490,20 +535,30 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
             userwait_time[0] += time.time() - t
 
     def initializition():
-        cam.trigger()
+        if trace:
+            cam.start_tracing()
+            cam.trigger()
         return [0, cam.grab(), 0]
 
     def do(arg1):
         move = move_methode(arg1[1])
         xmot.move(move[0]*cam.sensor_pixel_height)
         zmot.move(move[1]*cam.sensor_pixel_width)  # .wait()
-        arg1[2] = arg1[2]+1 if (move**2).sum() < 5**2 else 0
         cam.trigger()
-        return [arg1[0]+1, cam.grab(), arg1[2]]
+        arg1[0] += 1
+        arg1[1] = cam.grab()
+        arg1[2] = arg1[2]+1 if (move**2).sum() < (tolerance/10.)**2 else 0
+        return arg1
 
     def dest_reached(arg1):
         coord = cam2pixel()
         return ((coord - beamcenter)**2).sum() < tol2
+
+    def com_at_frmcenter(arg1):
+        img = arg1[1]
+        com = center_of_mass(img-img.min())
+        frm_center = np.array(img.shape) - 0.5
+        return ((com-frm_center)**2).sum() < tol2
 
     def abort_test(arg1):
         no_move = arg1[2] >= 3
@@ -516,7 +571,9 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
         zmot._position = 0
         pixel2cam([y, x])
         _iter = [0]
-        res = converge([do], dest_reached, max_iter, abort_test,
+        #res = converge([do], dest_reached, max_iter, abort_test,
+        #               initializition, None, _iter)
+        res = converge([do], com_at_frmcenter, max_iter, None,
                        initializition, None, _iter)
         count = int(_iter[0][0]*255./max_iter)
         if res == 'success':
@@ -531,7 +588,17 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
             v1 = 'dr_a'
             v2 = 1
             c_a[0] += 1
-        img_dr[y, x] = lcolor(v1, count)
+        col = lcolor(v1, count)
+        img_dr[y, x] = col
+        dot = np.array([[-1, 0, 0, 0, 1], [0, -1, 0, 1, 0]])
+        if trace:
+            from __new__test import line
+            tr = cam.stop_tracing()
+            tr = map(cam2pixel, tr)
+            d = dot + tr[0].reshape(2,1)
+            img_tr[d[0], d[1]] = col
+            for i in range(len(tr)-1):
+                line(img_tr, tr[i], tr[i+1], col)
         epy, epx = cam2pixel()
         if (epy > 0) and (epy < frm_shape[0]) and \
                 (epx > 0) and (epx < frm_shape[1]):
@@ -582,6 +649,7 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
     c_f = [0]
     c_a = [0]
     tsp = [0]
+    hist = {}
     epm = np.zeros(frm_shape, np.uint8)
     spm = np.zeros(frm_shape, np.bool_)
     start = np.round(np.array(cam._imgshape)/2)
@@ -598,6 +666,7 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
     img_dr[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = \
         lcolor('u_sp')
     img_ep = np.zeros(frm_shape, np.uint32)
+    img_tr = img_dr.copy()
 
     # testloop
     step = -1
@@ -627,15 +696,16 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
                 tdiff = time.time()-old_time-userwait_time[0]
                 timeout[0] = (tdiff > max_time+add2timeout[0]) and \
                     (not stopafter[0])
-                if timeout[0]:
+                if timeout[0] and (not abort[0]):
                     print_progress()
 
             y += ystep
-            if orel < round(1000*trel):
+            if orel < round(1000*trel) and (not abort[0]):
                 print_progress()
                 orel = round(1000*trel)
 
-        print_progress()
+        if not abort[0]:
+            print_progress()
 
     print 'computed '+str(tsp[0])+' startpoints in ' + \
         str(round(time.time()-old_time-userwait_time[0], 1))+'s'
@@ -673,21 +743,26 @@ def converge_test(move_methode, cam_data='stitched_image.jpg',
     mask = ((np.indices(np.ceil([tolerance*2+1, tolerance*2+1])) +
             (beamcenter % 1).reshape(2, 1, 1)-tolerance)**2).sum(0) < tol2
     img[sl1, sl2] = np.where(mask, lcolor('bc_inraw'), img[sl1, sl2])
-    m1 = np.logical_and(mask, img_dr[sl1, sl2] == lcolor('u_sp'))
-    img_dr[sl1, sl2] = np.where(m1, lcolor('bc_indata'), img_dr[sl1, sl2])
+    col_usp = lcolor('u_sp')
+    col_bc = lcolor('bc_indata')
+    m1 = np.logical_and(mask, img_dr[sl1, sl2] == col_usp)
+    img_dr[sl1, sl2] = np.where(m1, col_bc, img_dr[sl1, sl2])
     tmp = np.require(np.tile(lcolor('bg'), frm_shape), np.uint32)
-    tmp[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = \
-        lcolor('u_sp')
+    tmp[start[0]:start[0]+length[0]+1, start[1]:start[1]+length[1]+1] = col_usp
     img_ep = np.where(epm == 0, tmp, img_ep)
-    m2 = np.logical_and(mask, img_ep[sl1, sl2] == lcolor('u_sp'))
-    img_ep[sl1, sl2] = np.where(m2, lcolor('bc_indata'), img_ep[sl1, sl2])
+    m2 = np.logical_and(mask, img_ep[sl1, sl2] == col_usp)
+    img_ep[sl1, sl2] = np.where(m2, col_bc, img_ep[sl1, sl2])
+    m3 = np.logical_and(mask, img_tr[sl1, sl2] == col_usp)
+    img_tr[sl1, sl2] = np.where(m3, col_bc, img_tr[sl1, sl2])
 
     # result
     data = {'img': img, 'img_dr': img_dr, 'img_ep': img_ep,
             'ds': data_source, 'view': cam._imgshape, 'noise': imgnoise,
             'tol': tolerance, 'mi': max_iter, 'bc': beamcenter, 'cbc': bc,
-            'oc': outcount, 'c_s': c_s[0], 'c_f': c_f[0], 'c_a': c_a[0],
+            'oc': outcount[0], 'c_s': c_s[0], 'c_f': c_f[0], 'c_a': c_a[0],
             'tsp': tsp[0], 'ep_fmax': fmax, 'ep_smax': smax, 'ep_amax': amax}
+    if trace:
+        data['img_tr'] = img_tr
 
     return data
 
@@ -696,15 +771,14 @@ def converge_test_save_result(testdata, filename='converge_test.npz'):
     """"""
 
     td = testdata
-    np.savez_compressed(filename,
-                        img=np.require(td['img'], np.dtype('<u4')),
-                        img_dr=np.require(td['img_dr'], np.dtype('<u4')),
-                        img_ep=np.require(td['img_ep'], np.dtype('<u4')),
-                        ds=td['ds'], view=td['view'], noise=td['noise'],
-                        tol=td['tol'], mi=td['mi'], bc=td['bc'], cbc=td['cbc'],
-                        oc=td['oc'], tsp=td['tsp'], c_s=td['c_s'],
-                        c_f=td['c_f'], c_a=td['c_a'], ep_fmax=td['ep_fmax'],
-                        ep_smax=td['ep_smax'], ep_amax=td['ep_amax'])
+    td['img'] = np.require(td['img'], np.dtype('<u4'))
+    td['img_dr'] = np.require(td['img_dr'], np.dtype('<u4'))
+    td['img_ep'] = np.require(td['img_ep'], np.dtype('<u4'))
+    try:
+        td['img_tr'] = np.require(td['img_tr'], np.dtype('<u4'))
+    except KeyError:
+        pass
+    np.savez_compressed(filename, **td)
 
 
 def converge_test_load_result(filename='converge_test.npz'):
@@ -717,6 +791,10 @@ def converge_test_load_result(filename='converge_test.npz'):
     data['img'] = data['img'].view(np.dtype('<u4'))
     data['img_dr'] = data['img_dr'].view(np.dtype('<u4'))
     data['img_ep'] = data['img_ep'].view(np.dtype('<u4'))
+    try:
+        data['img_tr'] = data['img_tr'].view(np.dtype('<u4')) 
+    except KeyError:
+        pass
 
     return data
 
@@ -741,7 +819,7 @@ def converge_test_view_result(testdata):
         str(round(100*td['c_s']/float(td['tsp']), 1))+'%)' + \
         '\n  failed (after '+str(td['mi'])+' iterations): '+str(td['c_f']) + \
         ' startpoints ('+str(round(100*td['c_f']/float(td['tsp']), 1))+'%)' + \
-        '\n aborted: '+str(td['c_a'])+' startpoints (' + \
+        '\n  aborted: '+str(td['c_a'])+' startpoints (' + \
         str(round(100*td['c_a']/float(td['tsp']), 1))+'%)'
     img = td['img']
 
@@ -753,7 +831,7 @@ def converge_test_view_result(testdata):
           '\nmax_iterations = '+str(td['mi'])+'\ncenter of mass of the ' +
           'template is [x: '+str(td['cbc'][1])+', y: '+str(td['cbc'][0]) +
           '] and\ncenter of mass + converge (10iterations) is [x: ' +
-          str(td['bc'][1])+', Y: '+str(td['bc'][0])+' (marked ' +
+          str(td['bc'][1])+', Y: '+str(td['bc'][0])+'] (marked ' +
           colors['bc_inraw']['txt']+')\n\n'+stats_txt}
     i2 = {'ndArr': td['img_dr'], 'imgInfo': 'Image indicating for each pixel' +
           ' as a startingpoint if the beamcenter could be reached (within ' +
@@ -761,14 +839,15 @@ def converge_test_view_result(testdata):
           color_expl_txt('dr_')+'\n\n'+stats_txt}
     i3 = {'ndArr': td['img_ep'], 'imgInfo': 'Image indicating the endpoints ' +
           'after moving towards the center of mass.\n\n' +
-          color_expl_txt('ep_')+'\n\n'+stats_txt}
+          color_expl_txt('ep_')+'\n\n'+stats_txt+'\n'+str(td['oc']) +
+          ' startpoints left this area'}
     tabs = [{'tabTitle': 'cam_rawdata', 'images': i1},
             {'tabTitle': 'destination reached', 'images': i2},
             {'tabTitle': 'endpoints', 'images': i3}]
 
     try:
-        i4 = {'ndArr': td['img_tr'], 'imgInfo': 'Image showing the trace of ' +
-              'each startingpoint'}
+        i4 = {'ndArr': td['img_tr'], 'imgInfo': 'Image with traces for each'+
+              'startpoint.\n\n'+color_expl_txt('dr_')+'\n\n'+stats_txt}
         tabs.append({'tabTitle': 'trace', 'images': i4})
     except KeyError:
         pass
@@ -796,12 +875,15 @@ def converge_test_view_result(testdata):
         dr_d_bgra = dr_d.view(dtyp)
         for y in range(sh[0]):
             for x in range(sh[1]):
+                pix = dr_s[y, x]
+                mask = np.logical_and(pix != lcolor('bg'),
+                                      pix != lcolor('u_sp'))
+                mask = np.logical_and(mask, pix != lcolor('bc_indata'))
                 for k in ['k1', 'k2', 'k3', 'k4']:
-                    pix = dr_s_bgra[k][y, x]
-                    mask = np.logical_and(pix != lcolor('bg'),
-                                          pix != lcolor('u_sp'))
-                    pix = pix[mask]
-                    dr_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
+                    px = dr_s_bgra[k][y, x]
+                    pxm = px[mask]
+                    dr_d_bgra[k][y, x] = px.mean() if pxm.size == 0 \
+                        else pxm.mean()
         i8 = {'ndArr': dr_d, 'imgTitle': 'dest_reached',
               'imgInfo': i2['imgInfo']}
 
@@ -812,12 +894,15 @@ def converge_test_view_result(testdata):
         ep_d_bgra = ep_d.view(dtyp)
         for y in range(sh[0]):
             for x in range(sh[1]):
+                pix = ep_s[y, x]
+                mask = np.logical_and(pix != lcolor('bg'),
+                                      pix != lcolor('u_sp'))
+                mask = np.logical_and(mask, pix != lcolor('bc_indata'))
                 for k in ['k1', 'k2', 'k3', 'k4']:
-                    pix = ep_s_bgra[k][y, x]
-                    mask = np.logical_and(pix != lcolor('bg'),
-                                          pix != lcolor('u_sp'))
-                    pix = pix[mask]
-                    ep_d_bgra[k][y, x] = 0 if pix.size == 0 else pix.mean()
+                    px = ep_s_bgra[k][y, x]
+                    pxm = px[mask]
+                    ep_d_bgra[k][y, x] = px.mean() if pxm.size == 0 \
+                        else pxm.mean()
         i9 = {'ndArr': ep_d, 'imgTitle': 'endpoints', 'imgInfo': i3['imgInfo']}
         tabs.append({'tabTitle': 'overview', 'images': [i7, i8, i9]})
 
